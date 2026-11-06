@@ -6,7 +6,22 @@ traffic authority.
 
 **Backend only.** The interface is Swagger UI at `/docs`, plus scripts that simulate buses.
 
-> Live demo: _coming soon_ (app, `/docs`, `/api/v1/health`)
+**Live demo**
+- API docs (Swagger, try it out): https://traffic-management-psi.vercel.app/docs
+- Health check: https://traffic-management-psi.vercel.app/api/v1/health
+- Example: https://traffic-management-psi.vercel.app/api/v1/routes
+
+**Demo accounts** (demo data only):
+
+| Role | Email | Password |
+|---|---|---|
+| Driver (bus-1, has a rating) | `karim@demo.bus` | `driver-demo-123` |
+| Driver | `rahim@demo.bus`, `salam@demo.bus` | `driver-demo-123` |
+| Authority | `authority@demo.bus` | `authority-demo-123` |
+
+In Swagger: open `POST /auth/login` → **Try it out** → pick the Driver or Authority example → **Execute**,
+copy the `token`, click **Authorize** (top right) and paste it. Passenger endpoints need no login.
+Run the full scenario against it: `API_URL=https://traffic-management-psi.vercel.app npm run demo`
 
 ---
 
@@ -97,7 +112,7 @@ Either everything is saved or nothing is. A crash can never leave an event witho
 | Rate limiting | **Counter table in Postgres** | Works across serverless instances (in-memory counters don't) | Upstash Redis | An extra paid or managed service |
 | API docs | **Hand-written OpenAPI + Swagger UI** | Docs designed for readers, with rules and units in the descriptions | Generated from code | Generated docs miss the "why" and the business rules |
 | Tests | **Vitest** | Fast, TypeScript out of the box | Jest | Slower setup with TypeScript and ESM |
-| Hosting (planned) | **Vercel + Neon** | Free tiers, Git-based deploys, Neon is serverless Postgres with pooling | Render, Railway, AWS | More setup or cost for a demo |
+| Hosting | **Vercel (Singapore) + Neon (Singapore)** | Free tiers, Git-based deploys, Neon is serverless Postgres with pooling; same region keeps DB calls fast | Render, Railway, AWS | More setup or cost for a demo |
 
 ## Key design decisions
 
@@ -186,8 +201,7 @@ All paths start with `/api/v1`. Errors always look like `{ "error": { "code": ".
 | Authority | `GET /buses`, `GET /alerts`, `PATCH /alerts/{id}`, `GET /trips/{id}`, `GET /trips/{id}/events`, `GET /drivers/{id}/rating`, `GET /drivers/{id}/trips`, `GET /analytics/eta-accuracy` |
 | System | `GET /health`, `POST /internal/abandon-trips` (needs `x-cron-secret`) |
 
-**Demo accounts** (demo passwords only): drivers `karim@demo.bus`, `rahim@demo.bus`, `salam@demo.bus`
-(password `driver-demo-123`), authority `authority@demo.bus` (password `authority-demo-123`).
+Demo accounts are listed at the top of this README.
 
 ---
 

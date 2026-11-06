@@ -5,9 +5,20 @@ info:
   description: |
     MVP backend for tracking Dhaka buses, detecting unsafe driving and estimating arrivals.
 
-    **How to authorize:** call `POST /auth/login` with a demo account, copy `token`,
-    click **Authorize** and paste it. Demo accounts (demo passwords only): `karim@demo.bus`
-    (driver), `authority@demo.bus` (authority).
+    ### Demo accounts (demo data only)
+
+    | Role | Email | Password |
+    |---|---|---|
+    | Driver (bus-1) | `karim@demo.bus` | `driver-demo-123` |
+    | Driver | `rahim@demo.bus`, `salam@demo.bus` | `driver-demo-123` |
+    | Authority | `authority@demo.bus` | `authority-demo-123` |
+
+    ### How to log in
+    1. Open **Auth → POST /auth/login**, click **Try it out**, pick the *Driver* or *Authority* example, click **Execute**.
+    2. Copy `token` from the response.
+    3. Click **Authorize** (top right), paste the token, click **Authorize**.
+
+    Passenger endpoints need no login.
 servers:
   - url: /api/v1
 tags:
@@ -222,7 +233,13 @@ paths:
               properties:
                 email: { type: string, format: email }
                 password: { type: string }
-            example: { email: karim@demo.bus, password: driver-demo-123 }
+            examples:
+              driver:
+                summary: Driver (Karim, bus-1)
+                value: { email: karim@demo.bus, password: driver-demo-123 }
+              authority:
+                summary: Authority
+                value: { email: authority@demo.bus, password: authority-demo-123 }
       responses:
         "200":
           description: Logged in
