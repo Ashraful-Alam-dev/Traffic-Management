@@ -1,0 +1,17 @@
+name: Abandon stale trips
+
+# Vercel's free plan only allows daily cron jobs, so GitHub calls the endpoint instead.
+# GitHub may delay scheduled runs; the API also checks for stale trips on every read.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  call:
+    runs-on: ubuntu-latest
+    if: ${{ vars.APP_URL != '' }}
+    steps:
+      - run: |
+          curl -fsS -X POST "${{ vars.APP_URL }}/api/v1/internal/abandon-trips" \
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}"

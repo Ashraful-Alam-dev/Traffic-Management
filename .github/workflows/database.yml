@@ -1,0 +1,33 @@
+name: Database
+
+# Migrations run here, not in the Vercel build, so preview deploys never touch the production DB.
+on:
+  push:
+    branches: [main]
+    paths: ["prisma/**"]
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: "Also load the demo data (safe to run twice)"
+        type: boolean
+        default: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.DIRECT_URL }}
+      DIRECT_URL: ${{ secrets.DIRECT_URL }}
+      NODE_ENV: production
+      DEMO_DRIVER_PASSWORD: ${{ secrets.DEMO_DRIVER_PASSWORD }}
+      DEMO_AUTHORITY_PASSWORD: ${{ secrets.DEMO_AUTHORITY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx prisma migrate deploy
+      - if: ${{ inputs.seed }}
+        run: npm run db:seed
