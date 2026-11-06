@@ -1,0 +1,614 @@
+openapi: 3.0.3
+info:
+  title: Dhaka Bus Tracking API
+  version: 0.1.0
+  description: |
+    MVP backend for tracking Dhaka buses, detecting unsafe driving and estimating arrivals.
+
+    **How to authorize:** call `POST /auth/login` with a demo account, copy `token`,
+    click **Authorize** and paste it. Demo accounts (demo passwords only): `karim@demo.bus`
+    (driver), `authority@demo.bus` (authority).
+servers:
+  - url: /api/v1
+tags:
+  - name: Auth
+  - name: Passenger
+    description: Public, no login. Rate limited to 60 requests per minute per IP.
+  - name: Driver
+    description: Requires a driver token. Drivers only see their own data.
+  - name: Authority
+    description: Requires an authority token.
+  - name: Internal
+    description: Ops endpoints.
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+  responses:
+    BadRequest:
+      description: Validation failed
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: { code: VALIDATION_ERROR, message: "speedKmh: Number must be less than or equal to 150" } }
+    Unauthorized:
+      description: Missing or invalid token
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: { code: UNAUTHORIZED, message: Missing or invalid token } }
+    Forbidden:
+      description: Wrong role, or not your resource
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: { code: FORBIDDEN, message: Authority role required } }
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: { code: NOT_FOUND, message: Trip not found } }
+    Conflict:
+      description: State conflict
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: { code: CONFLICT, message: Driver or bus already has an active trip } }
+    TooMany:
+      description: Rate limited
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: { code: RATE_LIMITED, message: "Rate limit: 60 requests per minute" } }
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+    Position:
+      type: object
+      nullable: true
+      description: Last applied GPS point. Only shown while the bus is on an active trip.
+      properties:
+        lat: { type: number, description: "Latitude, -90..90" }
+        lng: { type: number, description: "Longitude, -180..180" }
+        speedKmh: { type: number, description: "Speed in km/h, 0..150" }
+        updatedAt: { type: string, format: date-time, description: Server time of the last applied point }
+    Stoppage:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        lat: { type: number }
+        lng: { type: number }
+        stopOrder: { type: integer, description: "Order in the UP direction (1 = first). DOWN is the reverse." }
+    Bus:
+      type: object
+      properties:
+        id: { type: string }
+        plateNumber: { type: string }
+        routeId: { type: string }
+        routeName: { type: string }
+        active: { type: boolean }
+        direction: { type: string, enum: [UP, DOWN], nullable: true }
+        position: { $ref: "#/components/schemas/Position" }
+        driver:
+          type: object
+          nullable: true
+          description: Only a first name and stars. No personal data.
+          properties:
+            displayName: { type: string }
+            stars: { type: number, nullable: true, description: "rating / 20, one decimal (0-5). Null until 5 completed trips." }
+    Trip:
+      type: object
+      properties:
+        id: { type: string }
+        driverId: { type: string }
+        busId: { type: string }
+        routeId: { type: string }
+        direction: { type: string, enum: [UP, DOWN] }
+        status: { type: string, enum: [ACTIVE, COMPLETED, ABANDONED] }
+        startedAt: { type: string, format: date-time }
+        endedAt: { type: string, format: date-time, nullable: true }
+        distanceKm: { type: number, description: "Distance in km (moves under 10 m and GPS jumps ignored)" }
+        score: { type: integer, nullable: true, description: "0-100. 100 minus penalties of non-cancelled events." }
+        provisional: { type: boolean, description: "true while ACTIVE: score computed on read and may change" }
+    LocationInput:
+      type: object
+      required: [lat, lng, speedKmh, recordedAt]
+      properties:
+        lat: { type: number, minimum: -90, maximum: 90 }
+        lng: { type: number, minimum: -180, maximum: 180 }
+        speedKmh: { type: number, minimum: 0, maximum: 150, description: Speed in km/h reported by the phone }
+        recordedAt: { type: string, format: date-time, description: "Device time. From 10 min in the past to 60 s in the future." }
+    LocationResult:
+      type: object
+      properties:
+        applied: { type: boolean, description: "false for duplicates and late (out-of-order) points" }
+        duplicate: { type: boolean }
+        locationId: { type: string }
+        events: { type: array, items: { type: string, enum: [HARSH_BRAKE, OVERSPEED, UNSCHEDULED_STOP] } }
+        alertsOpened: { type: array, items: { type: string, enum: [UNSCHEDULED_STOP, JAM, SEVERE_OVERSPEED] } }
+    DrivingEvent:
+      type: object
+      properties:
+        id: { type: string }
+        tripId: { type: string }
+        driverId: { type: string }
+        busId: { type: string }
+        type: { type: string, enum: [HARSH_BRAKE, OVERSPEED, UNSCHEDULED_STOP] }
+        severity: { type: string, enum: [MEDIUM, HIGH] }
+        value: { type: number, description: "m/s^2 for HARSH_BRAKE, max km/h for OVERSPEED, seconds for UNSCHEDULED_STOP" }
+        penalty: { type: integer }
+        cancelled: { type: boolean, description: "true if the stop turned into a jam (penalty not counted)" }
+        lat: { type: number }
+        lng: { type: number }
+        occurredAt: { type: string, format: date-time }
+    Alert:
+      type: object
+      properties:
+        id: { type: string }
+        tripId: { type: string, nullable: true }
+        busId: { type: string }
+        type: { type: string, enum: [UNSCHEDULED_STOP, JAM, SEVERE_OVERSPEED] }
+        status: { type: string, enum: [OPEN, ACKNOWLEDGED, RESOLVED] }
+        lat: { type: number }
+        lng: { type: number }
+        createdAt: { type: string, format: date-time }
+        resolvedAt: { type: string, format: date-time, nullable: true }
+    Rating:
+      type: object
+      properties:
+        driverId: { type: string }
+        status: { type: string, enum: [OK, NOT_ENOUGH_DATA] }
+        rating: { type: number, nullable: true, description: "Average score of the last 30 COMPLETED trips (0-100). Needs 5." }
+        stars: { type: number, nullable: true, description: "rating / 20, one decimal" }
+        tripsCounted: { type: integer }
+    ETA:
+      type: object
+      properties:
+        busId: { type: string }
+        stoppageId: { type: string }
+        stoppageName: { type: string }
+        eta:
+          type: object
+          nullable: true
+          properties:
+            seconds: { type: integer, description: Seconds until arrival }
+            arrivalAt: { type: string, format: date-time }
+            distanceM: { type: integer, description: Meters along the route stops }
+            speedKmh: { type: number, description: "Average of the last 5 points, minimum 8 km/h" }
+        reason: { type: string, nullable: true, enum: [NO_ACTIVE_TRIP, STOP_PASSED, STOP_NOT_ON_ROUTE] }
+        method:
+          type: string
+          nullable: true
+          enum: [LIVE, HISTORY]
+          description: "HISTORY if at least one stretch used past travel times for this hour (3+ past trips), else LIVE"
+        confidence: { type: string, nullable: true, enum: [HIGH, MEDIUM, LOW], description: "HIGH < 30 s since last update, MEDIUM < 2 min, else LOW" }
+
+paths:
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Log in (driver or authority) and get a JWT valid for 12 hours
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+            example: { email: karim@demo.bus, password: driver-demo-123 }
+      responses:
+        "200":
+          description: Logged in
+          content:
+            application/json:
+              example: { token: eyJhbGciOiJIUzI1NiJ9..., role: driver, expiresIn: 12h }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401":
+          description: Wrong email or password
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { error: { code: INVALID_CREDENTIALS, message: Wrong email or password } }
+
+  /routes:
+    get:
+      tags: [Passenger]
+      summary: List routes
+      responses:
+        "200":
+          description: Routes
+          content:
+            application/json:
+              example: { routes: [{ id: route-1, name: Gabtoli - Motijheel, company: { id: co-1, name: Dhaka Paribahan Ltd (demo) }, stopCount: 5 }] }
+        "429": { $ref: "#/components/responses/TooMany" }
+  /routes/{id}/stoppages:
+    get:
+      tags: [Passenger]
+      summary: Stoppages of a route in UP order
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: Stoppages
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  routeId: { type: string }
+                  stoppages: { type: array, items: { $ref: "#/components/schemas/Stoppage" } }
+              example: { routeId: route-1, stoppages: [{ id: stp-gabtoli, name: Gabtoli, lat: 23.7836, lng: 90.3442, stopOrder: 1 }] }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooMany" }
+  /routes/{id}/buses:
+    get:
+      tags: [Passenger]
+      summary: Buses on a route with live position
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: Buses
+          content:
+            application/json:
+              example: { routeId: route-1, buses: [{ id: bus-1, plateNumber: DHAKA-METRO-BA-11-1001, active: true, direction: UP, position: { lat: 23.7745, lng: 90.3657, speedKmh: 22, updatedAt: "2026-11-06T10:00:00Z" } }] }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooMany" }
+  /buses/{id}:
+    get:
+      tags: [Passenger]
+      summary: One bus (position, direction, driver first name and stars only)
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: Bus
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Bus" }
+              example: { id: bus-1, plateNumber: DHAKA-METRO-BA-11-1001, routeId: route-1, routeName: Gabtoli - Motijheel, active: true, direction: UP, position: { lat: 23.7745, lng: 90.3657, speedKmh: 22, updatedAt: "2026-11-06T10:00:00Z" }, driver: { displayName: Karim, stars: 4.3 } }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooMany" }
+  /buses/{id}/eta:
+    get:
+      tags: [Passenger]
+      summary: ETA of a bus to a stoppage
+      description: |
+        Next stop = first stop (in the trip's direction) not yet passed. Bus to next stop uses live speed
+        (average of last 5 points, at least 8 km/h). Each full stretch after that uses its average past
+        travel time at this hour of day (Dhaka time) if 3+ past trips exist, otherwise live speed.
+        Every answer is logged (LIVE and HISTORY) and later compared with the real arrival, see
+        GET /analytics/eta-accuracy.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { name: stoppageId, in: query, required: true, schema: { type: string }, example: stp-farmgate }
+      responses:
+        "200":
+          description: ETA (eta is null with a reason when it cannot be computed)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ETA" }
+              example: { busId: bus-1, stoppageId: stp-farmgate, stoppageName: Farmgate, eta: { seconds: 540, arrivalAt: "2026-11-06T10:09:00Z", distanceM: 3000, speedKmh: 20 }, reason: null, method: HISTORY, confidence: HIGH }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooMany" }
+
+  /trips:
+    post:
+      tags: [Driver]
+      summary: Start a trip on the driver's own bus
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [direction]
+              properties:
+                direction: { type: string, enum: [UP, DOWN], description: "UP = route stop order, DOWN = reverse" }
+            example: { direction: UP }
+      responses:
+        "201":
+          description: Trip started
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Trip" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /trips/{id}/location:
+    post:
+      tags: [Driver]
+      summary: Send one GPS point for your own active trip
+      description: |
+        Detection runs in the same transaction, comparing with the bus's previous point (device time):
+        - **HARSH_BRAKE**: deceleration >= 3 m/s^2 between points 1-10 s apart. Max one per 30 s. Penalty 5.
+        - **OVERSPEED**: > 60 km/h for >= 10 s. One event per episode, written when speed drops. Penalty 5,
+          or 10 if the max was > 80 km/h (also opens a SEVERE_OVERSPEED alert).
+        - **UNSCHEDULED_STOP**: < 2 km/h for >= 60 s and > 50 m from every route stoppage. Penalty 10 + alert.
+        - **JAM**: < 5 km/h for >= 3 min away from stoppages. Alert only. Cancels the stop penalty (traffic is not the driver's fault).
+        - Max one active alert per bus per type; auto-resolved when the bus moves again.
+
+        Duplicates (same recordedAt) return 200 with `duplicate: true`. Points older than the latest are stored
+        with `applied: false` and do not affect detection. Points under 2 s after the previous one return 429.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LocationInput" }
+            example: { lat: 23.7745, lng: 90.3657, speedKmh: 25, recordedAt: "2026-11-06T10:00:00Z" }
+      responses:
+        "201":
+          description: Point applied
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LocationResult" }
+              example: { applied: true, duplicate: false, locationId: clx1, events: [HARSH_BRAKE], alertsOpened: [] }
+        "200":
+          description: Duplicate or late point (not applied)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LocationResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/TooMany" }
+  /trips/{id}/end:
+    patch:
+      tags: [Driver]
+      summary: End your own trip (persists score, updates rating)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: Trip ended
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Trip" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /drivers/me/trips/current:
+    get:
+      tags: [Driver]
+      summary: Your active trip, or null
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Current trip
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  trip: { allOf: [{ $ref: "#/components/schemas/Trip" }], nullable: true }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /drivers/me/trips:
+    get:
+      tags: [Driver]
+      summary: Your trips (newest 50)
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Trips
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  trips: { type: array, items: { $ref: "#/components/schemas/Trip" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /drivers/me/rating:
+    get:
+      tags: [Driver]
+      summary: Your rating
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Rating
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Rating" }
+              example: { driverId: drv-1, status: OK, rating: 86.67, stars: 4.3, tripsCounted: 6 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /buses:
+    get:
+      tags: [Authority]
+      summary: All buses with live status
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: routeId, in: query, schema: { type: string } }
+        - { name: companyId, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string, enum: [ACTIVE, IDLE] } }
+      responses:
+        "200": { description: Buses }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /alerts:
+    get:
+      tags: [Authority]
+      summary: Alerts (newest 200)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [OPEN, ACKNOWLEDGED, RESOLVED] } }
+        - { name: type, in: query, schema: { type: string, enum: [UNSCHEDULED_STOP, JAM, SEVERE_OVERSPEED] } }
+      responses:
+        "200":
+          description: Alerts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  alerts: { type: array, items: { $ref: "#/components/schemas/Alert" } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /alerts/{id}:
+    patch:
+      tags: [Authority]
+      summary: Acknowledge or resolve an alert
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [ACKNOWLEDGED, RESOLVED] }
+            example: { status: ACKNOWLEDGED }
+      responses:
+        "200":
+          description: Updated alert
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Alert" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /trips/{id}:
+    get:
+      tags: [Authority]
+      summary: One trip
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: Trip
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Trip" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /trips/{id}/events:
+    get:
+      tags: [Authority]
+      summary: Driving events of a trip
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: Events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tripId: { type: string }
+                  events: { type: array, items: { $ref: "#/components/schemas/DrivingEvent" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /drivers/{id}/rating:
+    get:
+      tags: [Authority]
+      summary: A driver's rating
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: Rating
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Rating" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /drivers/{id}/trips:
+    get:
+      tags: [Authority]
+      summary: A driver's trips
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { description: Trips }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /analytics/eta-accuracy:
+    get:
+      tags: [Authority]
+      summary: How close past ETAs were to real arrivals (LIVE vs HISTORY method)
+      description: |
+        Joins every logged ETA with the moment the bus actually passed that stop.
+        error = predicted arrival - actual arrival (positive = predicted too late).
+        Only predictions made before the arrival count. Split by method and by how far ahead
+        the prediction was (0-5, 5-15, 15+ minutes).
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: routeId, in: query, schema: { type: string }, example: route-1 }
+      responses:
+        "200":
+          description: Accuracy summary
+          content:
+            application/json:
+              example:
+                routeId: null
+                live: { overall: { predictions: 5000, meanAbsErrorS: 420, medianAbsErrorS: 260, p90AbsErrorS: 1000, within2MinPct: 31.5, meanBiasS: -300 }, byHorizon: [] }
+                history: { overall: { predictions: 5000, meanAbsErrorS: 180, medianAbsErrorS: 110, p90AbsErrorS: 420, within2MinPct: 55.2, meanBiasS: -20 }, byHorizon: [] }
+                historyVsLiveImprovementPct: 57.1
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /health:
+    get:
+      tags: [Internal]
+      summary: App and database status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              example: { status: ok, db: ok, time: "2026-11-06T10:00:00Z" }
+        "503": { description: Database unreachable }
+  /internal/abandon-trips:
+    post:
+      tags: [Internal]
+      summary: Mark trips with no location for 10 minutes as ABANDONED (for a scheduler)
+      parameters:
+        - { name: x-cron-secret, in: header, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Done
+          content:
+            application/json:
+              example: { abandoned: 0 }
+        "401": { $ref: "#/components/responses/Unauthorized" }

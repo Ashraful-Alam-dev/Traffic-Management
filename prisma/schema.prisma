@@ -1,0 +1,267 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum Role {
+  driver
+  authority
+}
+
+enum Direction {
+  UP
+  DOWN
+}
+
+enum TripStatus {
+  ACTIVE
+  COMPLETED
+  ABANDONED
+}
+
+enum EventType {
+  HARSH_BRAKE
+  OVERSPEED
+  UNSCHEDULED_STOP
+}
+
+enum AlertType {
+  UNSCHEDULED_STOP
+  JAM
+  SEVERE_OVERSPEED
+}
+
+enum AlertStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+}
+
+model BusCompany {
+  id        String  @id
+  name      String
+  ownerName String
+  routes    Route[]
+
+  @@map("bus_company")
+}
+
+model Route {
+  id        String          @id
+  name      String
+  companyId String
+  company   BusCompany      @relation(fields: [companyId], references: [id])
+  stops     RouteStoppage[]
+  buses     Bus[]
+  trips     Trip[]
+
+  @@map("route")
+}
+
+model Stoppage {
+  id     String          @id
+  name   String
+  lat    Float
+  lng    Float
+  routes RouteStoppage[]
+
+  @@map("stoppage")
+}
+
+// stopOrder is for the UP direction; DOWN uses the reverse order.
+model RouteStoppage {
+  routeId    String
+  stoppageId String
+  stopOrder  Int
+  route      Route    @relation(fields: [routeId], references: [id])
+  stoppage   Stoppage @relation(fields: [stoppageId], references: [id])
+
+  @@id([routeId, stoppageId])
+  @@unique([routeId, stopOrder])
+  @@map("route_stoppage")
+}
+
+model Bus {
+  id          String             @id
+  plateNumber String             @unique
+  routeId     String
+  route       Route              @relation(fields: [routeId], references: [id])
+  drivers     Driver[]
+  trips       Trip[]
+  latest      BusLatestLocation?
+
+  @@map("bus")
+}
+
+model AppUser {
+  id           String  @id
+  email        String  @unique
+  passwordHash String
+  role         Role
+  driver       Driver?
+
+  @@map("app_user")
+}
+
+model Driver {
+  id              String         @id
+  userId          String         @unique
+  name            String
+  displayName     String // what passengers see (first name only)
+  busId           String
+  rating          Float?
+  ratedTripsCount Int            @default(0)
+  user            AppUser        @relation(fields: [userId], references: [id])
+  bus             Bus            @relation(fields: [busId], references: [id])
+  trips           Trip[]
+  events          DrivingEvent[]
+
+  @@map("driver")
+}
+
+model Trip {
+  id             String          @id @default(cuid())
+  driverId       String
+  busId          String
+  routeId        String
+  direction      Direction
+  startedAt      DateTime        @default(now())
+  endedAt        DateTime?
+  status         TripStatus      @default(ACTIVE)
+  distanceKm     Float           @default(0)
+  score          Int?
+  driver         Driver          @relation(fields: [driverId], references: [id])
+  bus            Bus             @relation(fields: [busId], references: [id])
+  route          Route           @relation(fields: [routeId], references: [id])
+  locations      Location[]
+  events         DrivingEvent[]
+  alerts         Alert[]
+  arrivals       StopArrival[]
+  etaPredictions EtaPrediction[]
+
+  @@index([driverId, status, endedAt(sort: Desc)])
+  @@index([busId, status])
+  @@map("trip")
+}
+
+model Location {
+  id         String   @id @default(cuid())
+  tripId     String
+  busId      String
+  lat        Float
+  lng        Float
+  speedKmh   Float
+  recordedAt DateTime // device time, used for all detection
+  receivedAt DateTime @default(now()) // server time
+  trip       Trip     @relation(fields: [tripId], references: [id])
+
+  @@unique([busId, recordedAt]) // makes retries idempotent
+  @@index([busId, recordedAt(sort: Desc)])
+  @@map("location")
+}
+
+model BusLatestLocation {
+  busId            String    @id
+  tripId           String
+  lat              Float
+  lng              Float
+  speedKmh         Float
+  recordedAt       DateTime
+  updatedAt        DateTime  @updatedAt
+  stoppedSince     DateTime? // speed < 2 km/h since (unscheduled stop)
+  slowSince        DateTime? // speed < 5 km/h since (jam)
+  overspeedSince   DateTime? // speed > limit since
+  overspeedMaxKmh  Float?
+  lastHarshBrakeAt DateTime?
+  nextStopOrder    Int? // index into the trip's ordered stops; never moves back
+  bus              Bus       @relation(fields: [busId], references: [id])
+
+  @@map("bus_latest_location")
+}
+
+model DrivingEvent {
+  id         String    @id @default(cuid())
+  tripId     String
+  driverId   String
+  busId      String
+  type       EventType
+  severity   String // LOW | MEDIUM | HIGH
+  value      Float // m/s^2 for braking, km/h for overspeed, seconds for stops
+  penalty    Int
+  cancelled  Boolean   @default(false) // true when a stop turned into a jam
+  lat        Float
+  lng        Float
+  occurredAt DateTime
+  trip       Trip      @relation(fields: [tripId], references: [id])
+  driver     Driver    @relation(fields: [driverId], references: [id])
+
+  @@index([tripId])
+  @@map("driving_event")
+}
+
+model Alert {
+  id         String      @id @default(cuid())
+  tripId     String?
+  busId      String
+  type       AlertType
+  status     AlertStatus @default(OPEN)
+  lat        Float
+  lng        Float
+  createdAt  DateTime    @default(now())
+  resolvedAt DateTime?
+  trip       Trip?       @relation(fields: [tripId], references: [id])
+
+  @@index([busId, type, status])
+  @@index([status, createdAt(sort: Desc)])
+  @@map("alert")
+}
+
+model RateLimit {
+  key         String   @id
+  windowStart DateTime
+  count       Int
+
+  @@map("rate_limit")
+}
+
+model StopArrival {
+  id         String    @id @default(cuid())
+  tripId     String
+  busId      String
+  routeId    String
+  direction  Direction
+  stoppageId String
+  stopIndex  Int // position in the trip's ordered stops (0 = first)
+  arrivedAt  DateTime
+  trip       Trip      @relation(fields: [tripId], references: [id])
+
+  @@unique([tripId, stoppageId])
+  @@index([routeId, direction])
+  @@map("stop_arrival")
+}
+
+enum EtaMethod {
+  LIVE // distance / recent speed
+  HISTORY // past travel times per stretch and hour, live speed as fallback
+}
+
+// Every ETA we gave, so we can compare it with the real arrival later.
+model EtaPrediction {
+  id                 String    @id @default(cuid())
+  tripId             String
+  stoppageId         String
+  method             EtaMethod
+  madeAt             DateTime // device time of the bus's latest point
+  minuteBucket       Int // madeAt in whole minutes; one prediction per minute per stop and method
+  horizonS           Int // predicted seconds until arrival
+  predictedArrivalAt DateTime
+  trip               Trip      @relation(fields: [tripId], references: [id])
+
+  @@unique([tripId, stoppageId, method, minuteBucket])
+  @@map("eta_prediction")
+}
