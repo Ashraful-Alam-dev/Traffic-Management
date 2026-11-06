@@ -27,6 +27,10 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+    cronSecret:
+      type: apiKey
+      in: header
+      name: x-cron-secret
   parameters:
     Id:
       name: id
@@ -206,6 +210,7 @@ paths:
   /auth/login:
     post:
       tags: [Auth]
+      security: []
       summary: Log in (driver or authority) and get a JWT valid for 12 hours
       requestBody:
         required: true
@@ -235,6 +240,7 @@ paths:
   /routes:
     get:
       tags: [Passenger]
+      security: []
       summary: List routes
       responses:
         "200":
@@ -246,6 +252,7 @@ paths:
   /routes/{id}/stoppages:
     get:
       tags: [Passenger]
+      security: []
       summary: Stoppages of a route in UP order
       parameters: [{ $ref: "#/components/parameters/Id" }]
       responses:
@@ -264,6 +271,7 @@ paths:
   /routes/{id}/buses:
     get:
       tags: [Passenger]
+      security: []
       summary: Buses on a route with live position
       parameters: [{ $ref: "#/components/parameters/Id" }]
       responses:
@@ -277,6 +285,7 @@ paths:
   /buses/{id}:
     get:
       tags: [Passenger]
+      security: []
       summary: One bus (position, direction, driver first name and stars only)
       parameters: [{ $ref: "#/components/parameters/Id" }]
       responses:
@@ -291,6 +300,7 @@ paths:
   /buses/{id}/eta:
     get:
       tags: [Passenger]
+      security: []
       summary: ETA of a bus to a stoppage
       description: |
         Next stop = first stop (in the trip's direction) not yet passed. Bus to next stop uses live speed
@@ -407,7 +417,7 @@ paths:
               schema:
                 type: object
                 properties:
-                  trip: { allOf: [{ $ref: "#/components/schemas/Trip" }], nullable: true }
+                  trip: { type: object, allOf: [{ $ref: "#/components/schemas/Trip" }], nullable: true }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
   /drivers/me/trips:
@@ -592,6 +602,7 @@ paths:
     get:
       tags: [Internal]
       summary: App and database status
+      security: []
       responses:
         "200":
           description: Healthy
@@ -603,8 +614,7 @@ paths:
     post:
       tags: [Internal]
       summary: Mark trips with no location for 10 minutes as ABANDONED (for a scheduler)
-      parameters:
-        - { name: x-cron-secret, in: header, required: true, schema: { type: string } }
+      security: [{ cronSecret: [] }]
       responses:
         "200":
           description: Done
